@@ -1,0 +1,20 @@
+{
+  "name": "joenoon",
+  "owner": {
+    "name": "Joe Noon",
+    "url": "https://github.com/joenoon/claude-plugins"
+  },
+  "metadata": {
+    "description": "Joe Noon's reusable Claude Code plugins — conventions, skills, and tools.",
+    "version": "0.1.0"
+  },
+  "plugins": [
+    {
+      "name": "phoenix",
+      "source": "./plugins/phoenix",
+      "description": "Opinionated patterns for Phoenix/LiveView/Ecto apps deployed on Fly.",
+      "category": "framework",
+      "tags": ["phoenix", "elixir", "liveview", "ecto", "fly"]
+    }
+  ]
+}

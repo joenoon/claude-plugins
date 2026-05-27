@@ -1,0 +1,11 @@
+{
+  "name": "phoenix",
+  "version": "0.1.0",
+  "description": "Opinionated Phoenix/LiveView/Ecto/Oban conventions distilled from a production app.",
+  "author": {
+    "name": "Joe Noon",
+    "url": "https://github.com/joenoon/claude-plugins"
+  },
+  "license": "MIT",
+  "keywords": ["phoenix", "elixir", "liveview", "ecto", "oban", "fly"]
+}
