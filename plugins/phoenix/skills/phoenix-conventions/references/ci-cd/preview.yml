@@ -1,0 +1,190 @@
+name: Preview Apps
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, closed]
+
+env:
+  FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+  FLY_ORG: ${{ vars.FLY_ORG }}
+  # === Neon-specific (drop or replace if using a different DB provider) ===
+  NEON_API_KEY: ${{ secrets.NEON_API_KEY }}
+  NEON_PROJECT_ID: ${{ vars.NEON_PREVIEW_PROJECT_ID }}
+  # ========================================================================
+
+concurrency:
+  group: preview-pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    if: github.event.action != 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Compute names
+        id: names
+        run: |
+          PR=${{ github.event.pull_request.number }}
+          echo "fly_app=myapp-pr-$PR"            >> "$GITHUB_OUTPUT"
+          echo "neon_branch=preview-pr-$PR"      >> "$GITHUB_OUTPUT"
+          echo "host=myapp-pr-$PR.fly.dev"       >> "$GITHUB_OUTPUT"
+          echo "pr=$PR"                          >> "$GITHUB_OUTPUT"
+
+      # === Neon branching (optional — adapt or remove for other DBs) ===
+      - name: Create / reuse Neon branch (preview-seed project)
+        id: neon
+        uses: neondatabase/create-branch-action@v5
+        with:
+          project_id: ${{ env.NEON_PROJECT_ID }}
+          branch_name: ${{ steps.names.outputs.neon_branch }}
+          api_key: ${{ env.NEON_API_KEY }}
+      # =================================================================
+
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Create Fly app if missing
+        env:
+          APP: ${{ steps.names.outputs.fly_app }}
+        run: |
+          if flyctl apps list --json | jq -re ".[] | select(.Name == \"$APP\") | .Name" >/dev/null; then
+            echo "Fly app $APP already exists, reusing"
+          else
+            flyctl apps create "$APP" --org "$FLY_ORG"
+          fi
+
+      - name: Stage Fly secrets
+        env:
+          APP: ${{ steps.names.outputs.fly_app }}
+          HOST: ${{ steps.names.outputs.host }}
+          PR: ${{ steps.names.outputs.pr }}
+          DB_URL: ${{ steps.neon.outputs.db_url }}
+          PREVIEW_SECRET_BASE: ${{ secrets.PREVIEW_SECRET_BASE }}
+        run: |
+          # PR-stable SECRET_KEY_BASE and RELEASE_COOKIE:
+          #  - Stable across re-pushes to the same PR (no logout-every-deploy)
+          #  - Different per PR (cookies don't leak between previews)
+          #  - Different from prod (PREVIEW_SECRET_BASE is its own repo secret)
+          SECRET_KEY_BASE="${PREVIEW_SECRET_BASE}+pr-${PR}"
+          RELEASE_COOKIE="preview-pr-${PR}"
+
+          flyctl secrets set --app "$APP" --stage \
+            "PHX_HOST=$HOST" \
+            "SECRET_KEY_BASE=$SECRET_KEY_BASE" \
+            "RELEASE_COOKIE=$RELEASE_COOKIE" \
+            "DATABASE_URL=$DB_URL"
+
+          # Add any other secrets your app needs (3rd-party API keys, etc.)
+          # by extending the `flyctl secrets set` call above.
+
+      - name: Deploy
+        env:
+          APP: ${{ steps.names.outputs.fly_app }}
+          PR_HEAD_SHA: ${{ github.event.pull_request.head.sha }}
+        run: |
+          APP_REVISION=$(echo "$PR_HEAD_SHA" | cut -c1-7)
+          flyctl deploy \
+            --app "$APP" \
+            --remote-only \
+            --ha=false \
+            --build-arg "APP_REVISION=$APP_REVISION"
+
+      - name: Sticky PR comment with preview URL
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const url = `https://${{ steps.names.outputs.host }}/`
+            const marker = "<!-- preview-deploy -->"
+            const body = [
+              marker,
+              `🚀 Preview deploy: ${url}`,
+              "",
+              `App: \`${{ steps.names.outputs.fly_app }}\``,
+            ].join("\n")
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            })
+            const existing = comments.find(c => c.body && c.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              })
+            }
+
+  teardown:
+    if: github.event.action == 'closed'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      pull-requests: write
+    steps:
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Destroy Fly app
+        env:
+          APP: myapp-pr-${{ github.event.pull_request.number }}
+        run: |
+          if flyctl apps list --json | jq -re ".[] | select(.Name == \"$APP\") | .Name" >/dev/null; then
+            flyctl apps destroy "$APP" --yes
+          else
+            echo "Fly app $APP does not exist, nothing to destroy"
+          fi
+
+      # === Neon branch cleanup (optional — adapt or remove for other DBs) ===
+      - name: Delete Neon branch
+        uses: neondatabase/delete-branch-action@v3
+        with:
+          project_id: ${{ env.NEON_PROJECT_ID }}
+          branch: preview-pr-${{ github.event.pull_request.number }}
+          api_key: ${{ env.NEON_API_KEY }}
+      # ======================================================================
+
+      - name: Sticky PR comment teardown
+        uses: actions/github-script@v7
+        with:
+          script: |
+            const pr = ${{ github.event.pull_request.number }}
+            const marker = "<!-- preview-deploy -->"
+            const body = [
+              marker,
+              `🧹 Preview torn down. Fly app \`myapp-pr-${pr}\` destroyed.`,
+            ].join("\n")
+            const { data: comments } = await github.rest.issues.listComments({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number,
+            })
+            const existing = comments.find(c => c.body && c.body.includes(marker))
+            if (existing) {
+              await github.rest.issues.updateComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                comment_id: existing.id,
+                body,
+              })
+            } else {
+              await github.rest.issues.createComment({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: context.issue.number,
+                body,
+              })
+            }

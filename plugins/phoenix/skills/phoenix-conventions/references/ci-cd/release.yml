@@ -1,0 +1,87 @@
+name: Release to prod
+
+# Workflow:
+#   git push origin +HEAD:release-prod          # deploy current HEAD
+#   git push origin +<older-sha>:release-prod   # roll back to <older-sha>
+#
+# The `release-prod` branch always points at what's currently deployed.
+# After every successful deploy, the workflow creates an immutable
+# `prod-YYYY-MM-DD-<short-sha>` tag + GH Release for forensic provenance —
+# so the branch stays simple, but the deploy history is permanently recorded.
+
+on:
+  push:
+    branches: [release-prod]
+
+concurrency:
+  group: release-prod
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup flyctl
+        uses: superfly/flyctl-actions/setup-flyctl@master
+
+      - name: Deploy
+        env:
+          FLY_API_TOKEN: ${{ secrets.FLY_API_TOKEN }}
+        run: |
+          APP_REVISION=$(git rev-parse --short=7 HEAD)
+          flyctl deploy --app myapp --remote-only \
+            --build-arg "APP_REVISION=$APP_REVISION"
+
+      - name: Wait for prod URL to return 200
+        run: |
+          for i in $(seq 1 30); do
+            STATUS=$(curl -s -o /dev/null -w "%{http_code}" https://your-app.example.com/ || echo "000")
+            if [ "$STATUS" = "200" ]; then
+              echo "your-app.example.com returning 200 after $((i*5))s"
+              exit 0
+            fi
+            echo "attempt $i: HTTP $STATUS, retrying in 5s..."
+            sleep 5
+          done
+          echo "your-app.example.com did not return 200 after 150s"
+          exit 1
+
+      - name: Create immutable auto-tag + GH release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          DATE=$(date -u +%Y-%m-%d)
+          SHORT_SHA=$(git rev-parse --short=7 HEAD)
+          TAG="prod-${DATE}-${SHORT_SHA}"
+
+          # If the tag already exists (re-deploy of the same SHA), skip.
+          if git rev-parse "refs/tags/$TAG" >/dev/null 2>&1; then
+            echo "Tag $TAG already exists; this commit was deployed before. Skipping tag creation."
+            exit 0
+          fi
+
+          # Find the previous prod-* tag (most recent by creator date) for
+          # the changelog basis. If none, mark this as the initial release.
+          PREV_TAG=$(git tag -l "prod-*" --sort=-creatordate | head -n 1 || true)
+
+          git tag "$TAG"
+          git push origin "$TAG"
+
+          if [ -n "$PREV_TAG" ]; then
+            gh release create "$TAG" \
+              --title "$TAG" \
+              --target "$GITHUB_SHA" \
+              --notes-start-tag "$PREV_TAG" \
+              --generate-notes
+          else
+            gh release create "$TAG" \
+              --title "$TAG (initial release)" \
+              --target "$GITHUB_SHA" \
+              --generate-notes
+          fi
