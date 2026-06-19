@@ -26,25 +26,28 @@ the verification earns it.
 When asked to browser-verify, ensure the harness is present in the project,
 then run it. Do NOT hand the user a checklist — perform these yourself.
 
-1. **Harness files.** If `bin/browser/shot.mjs` does not exist in the project,
-   copy all four template files from this skill's `references/browser/`
-   directory into the project's `bin/browser/`:
-   `shot.mjs`, `setup.sh`, `package.json`, `.gitignore`. (`chmod +x
-   bin/browser/setup.sh`.)
+1. **Harness files.** If the project has no render-and-screenshot harness, copy
+   all four template files from this skill's `references/browser/` directory —
+   `shot.mjs`, `setup.sh`, `package.json`, `.gitignore` — into the project
+   (`bin/browser/` is the default; match an existing dev-scripts dir if the
+   project has one). Then `chmod +x setup.sh`. Paths below say `bin/browser/…`;
+   read them relative to wherever it actually lives — `shot.mjs` locates its own
+   `shots/` dir, so any location works.
 2. **Dependencies.** If `bin/browser/node_modules` is missing, run
    `bin/browser/setup.sh` (Playwright + Chromium + apt `install-deps`).
    Chromium is cached in `~/.cache/ms-playwright` and shared across projects,
    so this is a one-time cost per machine.
-3. **Dev-login route.** If `--auth` is needed and the project has no dev-gated
-   login backdoor, add one (see below) — or, if you cannot safely edit the
-   router, tell the user the one route to add and why.
+3. **Dev-login route.** If `--auth` is needed, point `AUTH_PATH` at an existing
+   dev-login route, or add one (see below). If you cannot safely edit the
+   router, tell the user which route to add and why.
 4. **Run the shot** for the path(s) under test.
 5. **Read the screenshot** (`bin/browser/shots/<name>.png`) and report what you
    see, plus the `liveViewConnected` / `status` lines.
 
 ## Usage
 
-Dev server must be running (e.g. `PORT=8080 mix phx.server`).
+Dev server must be running; point `BASE` at it (e.g. `PORT=8080 mix phx.server`,
+or Phoenix's default `:4000` — whatever the project uses).
 
 ```
 node bin/browser/shot.mjs <path> [--auth] [--mobile] [--name foo]
@@ -54,19 +57,22 @@ node bin/browser/shot.mjs <path> [--auth] [--mobile] [--name foo]
 - `--mobile` uses a 390px viewport.
 - `--name` sets the screenshot basename (default derived from the path).
 
-Env: `BASE` (default `http://127.0.0.1:8080`), `AUTH_PATH` (dev-login route
-prefix, default `/dev/login?email=`), `AUTH_EMAIL` (who to log in as), `WAIT`
-(settle ms, default `1500`; raise it for pages with slow server-side data).
+Env: `BASE` (default `http://127.0.0.1:8080`), `AUTH_PATH` (the dev-login route,
+default `/dev/login?email=`), `AUTH_EMAIL` (who to log in as), `WAIT` (settle ms,
+default `1500`; raise for slow pages).
 
 Output: `url / status / liveViewConnected / title / text` plus a full-page PNG
 in `bin/browser/shots/` (gitignored).
 
 ## The dev-login backdoor
 
-The normal email-code login is rate-limited (typically a few codes per hour per
-email), so re-logging-in on every render trips the limit. Instead, add a
-dev-only route that sets the session directly. Compile-gate it to dev so it
-never ships to prod — in a Phoenix router:
+The harness logs in by hitting `AUTH_PATH` (default `/dev/login?email=`). First
+read the project's auth and reuse any existing dev-only login or impersonation
+route — point `AUTH_PATH` at it and skip the rest. Driving the real login flow
+on every render is slow and often rate-limited or dependent on external services
+(e.g. email-code logins typically cap at a handful per hour). Only if no dev
+login exists, add a dev-gated route that sets the session directly — one shape
+that works (adapt path, verb, scope, and session-setting to the app):
 
 ```elixir
 if Application.compile_env(:my_app, :dev_routes) do
@@ -77,16 +83,18 @@ if Application.compile_env(:my_app, :dev_routes) do
 end
 ```
 
-The controller looks up (or creates) the user by the `email` query param, puts
-the same session the real login flow does, and redirects to `/`. Match the
-project's actual auth — read its existing login controller/plug first.
+The controller looks up (or creates) the user by the `email` param, puts the
+same session the real login flow does, and redirects to `/`. The path/verb are
+yours — point `AUTH_PATH` at whatever you pick. **Non-negotiable:** the route
+must stay compile-gated so it never ships to prod.
 
 ## Gotchas
 
-- **`liveViewConnected: false` with `/assets/app.js` 404** — the JS bundle did
-  not load, so LiveView never connected. In a git-worktree setup this usually
-  means the worktree's `assets/node_modules` link is missing and esbuild can't
-  resolve deps; restore the project's worktree asset linking and retry.
+- **`liveViewConnected: false` with `/assets/app.js` 404** — the JS bundle
+  didn't load, so LiveView never connected. Check the asset pipeline for this
+  server: assets built, watcher running, esbuild resolving deps, `BASE` pointing
+  at the right server. One specific case: a git-worktree's `assets/node_modules`
+  link can be missing — restore it and retry.
 - **Run the script from wherever Playwright is installed** — it only talks to
   the server at `BASE` over HTTP, so any checkout's running dev server is what
   gets rendered, regardless of which `bin/browser/` you launch from.
