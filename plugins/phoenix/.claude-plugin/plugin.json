@@ -1,6 +1,6 @@
 {
   "name": "phoenix",
-  "version": "0.1.0",
+  "version": "0.2.0",
   "description": "Opinionated Phoenix/LiveView/Ecto/Oban conventions distilled from a production app.",
   "author": {
     "name": "Joe Noon",
