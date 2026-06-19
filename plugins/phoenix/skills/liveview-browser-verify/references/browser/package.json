@@ -1,0 +1,9 @@
+{
+  "name": "phoenix-browser-tools",
+  "private": true,
+  "type": "module",
+  "description": "Headless-browser dev tooling for verifying a LiveView UI end-to-end.",
+  "dependencies": {
+    "playwright": "^1.60.0"
+  }
+}
